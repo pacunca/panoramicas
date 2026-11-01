@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Test RATK Hit-Test - JL Studio</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            font-family: Arial, sans-serif;
+            background: #000;
+        }
+        #info {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            color: #fff;
+            background: rgba(0,0,0,0.7);
+            padding: 10px 15px;
+            border-radius: 8px;
+            font-size: 14px;
+            z-index: 100;
+            max-width: 80%;
+        }
+        #ar-button {
+            position: absolute;
+            bottom: 30px;
+            left: 50%;
+            transform: translateX(-50%);
+            padding: 15px 40px;
+            font-size: 18px;
+            background: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 30px;
+            cursor: pointer;
+            z-index: 100;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.3);
+        }
+        #ar-button:disabled {
+            background: #666;
+            cursor: not-allowed;
+        }
+        #status {
+            position: absolute;
+            bottom: 100px;
+            left: 50%;
+            transform: translateX(-50%);
+            color: #fff;
+            background: rgba(0,0,0,0.7);
+            padding: 8px 20px;
+            border-radius: 20px;
+            font-size: 14px;
+            z-index: 100;
+            text-align: center;
+            min-width: 200px;
+        }
+        #error {
+            color: #ff6b6b;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="info">
+        <strong>JL Studio - Test RATK Hit-Test</strong><br>
+        Toca el botón para iniciar AR. Apunta al suelo y toca la pantalla para colocar un cubo.
+    </div>
+
+    <div id="status">Esperando inicio...</div>
+
+    <button id="ar-button" disabled>Comprobar AR...</button>
+
+    <!-- Three.js -->
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+            }
+        }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { ARButton, RealityAccelerator } from 'https://cdn.jsdelivr.net/npm/ratk@0.3.0/+esm';
+
+        // --- Configuración básica ---
+        const statusEl = document.getElementById('status');
+        const arButton = document.getElementById('ar-button');
+
+        let renderer, scene, camera;
+        let ratk;
+        let reticle;
+        let hitTestTarget = null;
+        let isSessionActive = false;
+
+        // --- Inicialización de Three.js ---
+        function initThree() {
+            renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+            renderer.setPixelRatio(window.devicePixelRatio);
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.xr.enabled = true;
+            document.body.appendChild(renderer.domElement);
+
+            scene = new THREE.Scene();
+
+            camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.01, 100);
+            camera.position.set(0, 1.6, 3);
+
+            // Luz básica para ver el cubo
+            const light = new THREE.HemisphereLight(0xffffff, 0xbbbbff, 3);
+            scene.add(light);
+
+            // Retículo (anillo pequeño que sigue al hit-test)
+            const reticleGeometry = new THREE.RingGeometry(0.05, 0.08, 32);
+            reticleGeometry.rotateX(-Math.PI / 2);
+            const reticleMaterial = new THREE.MeshBasicMaterial({
+                color: 0x00ff00,
+                side: THREE.DoubleSide
+            });
+            reticle = new THREE.Mesh(reticleGeometry, reticleMaterial);
+            reticle.matrixAutoUpdate = false;
+            reticle.visible = false;
+            scene.add(reticle);
+        }
+
+        // --- Inicialización de RATK ---
+        function initRATK() {
+            ratk = new RealityAccelerator(renderer.xr);
+            scene.add(ratk.root);
+        }
+
+        // --- Actualización del hit-test en cada frame ---
+        async function updateHitTest() {
+            if (!isSessionActive) return;
+
+            // Si no tenemos un target de hit-test, lo creamos desde el viewer space
+            if (!hitTestTarget) {
+                try {
+                    // Parámetros: offsetOrigin (0,0,0) y offsetDirection (0,0,-1)
+                    // para que el rayo salga del centro de la pantalla hacia adelante
+                    hitTestTarget = await ratk.createHitTestTargetFromViewerSpace(
+                        new THREE.Vector3(0, 0, 0),
+                        new THREE.Vector3(0, 0, -1)
+                    );
+
+                    if (hitTestTarget) {
+                        // Añadimos el retículo como hijo del target
+                        // (aunque el retículo ya está en la escena, podemos moverlo manualmente)
+                        statusEl.textContent = 'Hit-test activo. Apunta al suelo.';
+                    }
+                } catch (e) {
+                    console.warn('Error creando hit-test target:', e);
+                    statusEl.innerHTML = '<span id="error">Error en hit-test: ' + e.message + '</span>';
+                }
+            }
+
+            // Si tenemos target, actualizamos la posición del retículo
+            if (hitTestTarget && hitTestTarget.position) {
+                // El target de RATK extiende Object3D, así que tiene position y quaternion
+                reticle.visible = true;
+                reticle.position.copy(hitTestTarget.position);
+                reticle.quaternion.copy(hitTestTarget.quaternion);
+                reticle.updateMatrix();
+                statusEl.textContent = 'Suelo detectado. Toca para colocar el cubo.';
+            } else {
+                reticle.visible = false;
+                statusEl.textContent = 'Buscando superficie... apunta al suelo.';
+            }
+        }
+
+        // --- Colocar cubo en la posición del retículo ---
+        function placeCube() {
+            if (!reticle.visible) {
+                statusEl.textContent = 'No hay superficie detectada todavía.';
+                return;
+            }
+
+            const geometry = new THREE.BoxGeometry(0.1, 0.1, 0.1);
+            const material = new THREE.MeshStandardMaterial({ color: 0xff6600 });
+            const cube = new THREE.Mesh(geometry, material);
+
+            // Posicionar el cubo donde está el retículo, un poco elevado para que se vea
+            cube.position.copy(reticle.position);
+            cube.position.y += 0.05;
+
+            scene.add(cube);
+            statusEl.textContent = 'Cubo colocado. Toca en otro sitio para colocar más.';
+        }
+
+        // --- Iniciar sesión AR ---
+        async function startARSession() {
+            try {
+                const session = await navigator.xr.requestSession('immersive-ar', {
+                    requiredFeatures: ['hit-test'],
+                    optionalFeatures: []
+                });
+
+                renderer.xr.setSession(session);
+                isSessionActive = true;
+                statusEl.textContent = 'Sesión AR iniciada. Apunta al suelo.';
+
+                // Configurar el listener de toque en la pantalla durante la sesión
+                session.addEventListener('select', () => {
+                    placeCube();
+                });
+
+                // Iniciar el loop de renderizado XR
+                renderer.setAnimationLoop(renderXR);
+
+            } catch (e) {
+                console.error('Error al iniciar AR:', e);
+                statusEl.innerHTML = '<span id="error">Error AR: ' + e.message + '</span>';
+                arButton.textContent = 'AR no disponible';
+            }
+        }
+
+        // --- Loop de renderizado XR ---
+        function renderXR(timestamp, frame) {
+            // RATK requiere update() dentro del loop XR
+            ratk.update();
+
+            // Actualizar hit-test
+            updateHitTest();
+
+            // Renderizar la escena
+            renderer.render(scene, camera);
+        }
+
+        // --- Comprobar soporte y configurar botón ---
+        async function checkSupport() {
+            if (!navigator.xr) {
+                statusEl.innerHTML = '<span id="error">WebXR no disponible en este navegador.</span>';
+                arButton.textContent = 'WebXR no soportado';
+                return;
+            }
+
+            try {
+                const supported = await navigator.xr.isSessionSupported('immersive-ar');
+                if (supported) {
+                    arButton.disabled = false;
+                    arButton.textContent = 'Iniciar AR';
+                    statusEl.textContent = 'AR disponible. Pulsa el botón.';
+                } else {
+                    arButton.textContent = 'AR no soportado';
+                    statusEl.innerHTML = '<span id="error">immersive-ar no soportado.</span>';
+                }
+            } catch (e) {
+                arButton.textContent = 'Error comprobando AR';
+                statusEl.innerHTML = '<span id="error">Error: ' + e.message + '</span>';
+            }
+        }
+
+        // --- Inicio ---
+        initThree();
+        initRATK();
+        checkSupport();
+
+        arButton.addEventListener('click', startARSession);
+
+        // Redimensionar
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+    </script>
+
+</body>
+</html>
